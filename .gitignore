@@ -1,0 +1,20 @@
+# PlatformIO build files
+.pio/
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Generated video files
+data/video.bin
+output/video.bin
+output/preview.png
+
+# Original video asset — keep it out of the repository
+love me not.mp4
+
+# Environment and editor files
+.env
+.vscode/
