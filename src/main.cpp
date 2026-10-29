@@ -12,20 +12,25 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C oled(
 
 constexpr uint16_t SCREEN_WIDTH = 128;
 constexpr uint16_t SCREEN_HEIGHT = 64;
-constexpr size_t FRAME_BYTES = SCREEN_WIDTH * SCREEN_HEIGHT / 8;
+constexpr size_t FRAME_BYTES =
+    (SCREEN_WIDTH * SCREEN_HEIGHT) / 8;
 
 constexpr uint16_t VIDEO_FPS = 30;
-constexpr uint32_t FRAME_INTERVAL_US = 1000000UL / VIDEO_FPS;
+constexpr uint32_t FRAME_INTERVAL_US =
+    1000000UL / VIDEO_FPS;
+
+constexpr int I2C_SDA_PIN = 21;
+constexpr int I2C_SCL_PIN = 22;
 
 File videoFile;
 uint8_t frameBuffer[FRAME_BYTES];
 
 uint32_t frameCount = 0;
-uint32_t lastFrameTime = 0;
+uint32_t nextFrameTime = 0;
 bool playbackReady = false;
 
 void showError(const char* message) {
-    Serial.println(message);
+    Serial.printf("ERROR: %s\n", message);
 
     oled.clearBuffer();
     oled.setFont(u8g2_font_6x10_tf);
@@ -38,7 +43,7 @@ void setup() {
     Serial.begin(115200);
     delay(300);
 
-    Wire.begin(21, 22);
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
 
     oled.begin();
     oled.setContrast(255);
@@ -73,14 +78,26 @@ void setup() {
 
     frameCount = videoSize / FRAME_BYTES;
 
-    Serial.printf("Video size: %u bytes\n",
-                  static_cast<unsigned int>(videoSize));
-    Serial.printf("Frame count: %u\n",
-                  static_cast<unsigned int>(frameCount));
-    Serial.printf("Frame rate target: %u FPS\n", VIDEO_FPS);
+    Serial.printf(
+        "Video size: %u bytes\n",
+        static_cast<unsigned int>(videoSize)
+    );
 
+    Serial.printf(
+        "Frame count: %u\n",
+        static_cast<unsigned int>(frameCount)
+    );
+
+    Serial.printf(
+        "Frame rate target: %u FPS\n",
+        VIDEO_FPS
+    );
+
+    Serial.println("Bitmap format: XBM-compatible, LSB first.");
+    Serial.println("SPIFFS mounted and video validated.");
+
+    nextFrameTime = micros();
     playbackReady = true;
-    lastFrameTime = micros();
 
     Serial.println("Playback ready.");
 }
@@ -91,15 +108,18 @@ void loop() {
         return;
     }
 
-    const uint32_t now = micros();
-    const uint32_t elapsed = now - lastFrameTime;
+    // Pace frames against a scheduled deadline.
+    const int32_t waitTime =
+        static_cast<int32_t>(nextFrameTime - micros());
 
-    if (elapsed < FRAME_INTERVAL_US) {
-        delayMicroseconds(FRAME_INTERVAL_US - elapsed);
+    if (waitTime > 0) {
+        delayMicroseconds(static_cast<uint32_t>(waitTime));
+    } else if (waitTime < -static_cast<int32_t>(FRAME_INTERVAL_US)) {
+        // Avoid rapid catch-up frames if rendering falls behind.
+        nextFrameTime = micros();
     }
 
-    lastFrameTime = micros();
-
+    // Rewind after the final complete frame.
     if (videoFile.available() < static_cast<int>(FRAME_BYTES)) {
         if (!videoFile.seek(0)) {
             showError("Video rewind failed");
@@ -109,7 +129,8 @@ void loop() {
         }
     }
 
-    const size_t bytesRead = videoFile.read(frameBuffer, FRAME_BYTES);
+    const size_t bytesRead =
+        videoFile.read(frameBuffer, FRAME_BYTES);
 
     if (bytesRead != FRAME_BYTES) {
         showError("Video read failed");
@@ -118,8 +139,7 @@ void loop() {
         return;
     }
 
-    // The converter packs pixels left-to-right, MSB first.
-    // U8g2 draws this 1-bit bitmap directly to the display buffer.
+    // Converter uses LSB-first packing, as expected by drawXBMP().
     oled.clearBuffer();
     oled.drawXBMP(
         0,
@@ -129,4 +149,12 @@ void loop() {
         frameBuffer
     );
     oled.sendBuffer();
+
+    // Schedule the next frame. If rendering is too slow,
+    // resume from the current time rather than rushing frames.
+    nextFrameTime += FRAME_INTERVAL_US;
+
+    if (static_cast<int32_t>(nextFrameTime - micros()) <= 0) {
+        nextFrameTime = micros() + FRAME_INTERVAL_US;
+    }
 }
